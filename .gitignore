@@ -1,0 +1,14 @@
+# Build output
+build/
+*.o
+*.p
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+sdk/lib/*.a
+sdk/lib/*.o
