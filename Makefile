@@ -25,19 +25,25 @@ STUBS    = $(BUILD)/stubs.o
 
 SLIB_OBJS = $(BUILD)/slib1.o $(BUILD)/slib2.o $(BUILD)/slib3.o $(BUILD)/slib4.o
 
-$(BUILD)/serv_gcc.o: $(SDK_SRC)/serv_gcc.s
+$(BUILD):
+	mkdir -p $(BUILD)
+
+$(SDK_LIB):
+	mkdir -p $(SDK_LIB)
+
+$(BUILD)/serv_gcc.o: $(SDK_SRC)/serv_gcc.s | $(BUILD)
 	$(AS) -m68020 -o $@ $<
 
-$(BUILD)/slib%.o: $(SDK_SRC)/slib%.c
+$(BUILD)/slib%.o: $(SDK_SRC)/slib%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(BUILD)/stubs.o: $(SDK_SRC)/stubs.c
+$(BUILD)/stubs.o: $(SDK_SRC)/stubs.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(SDK_LIB)/server.a: $(SLIB_OBJS)
+$(SDK_LIB)/server.a: $(SLIB_OBJS) | $(SDK_LIB)
 	$(AR) rcs $@ $^
 
-$(SDK_LIB)/serv_gcc.o: $(BUILD)/serv_gcc.o
+$(SDK_LIB)/serv_gcc.o: $(BUILD)/serv_gcc.o | $(SDK_LIB)
 	cp $< $@
 
 sdk: $(SDK_LIB)/server.a $(SDK_LIB)/serv_gcc.o $(STUBS)
@@ -51,7 +57,7 @@ endef
 # ---- Plugins ----
 
 # ObjSwap - Object replacement by frame number
-$(BUILD)/objswap.o: $(SRC)/objswap/objswap.c
+$(BUILD)/objswap.o: $(SRC)/objswap/objswap.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/objswap.p: $(BUILD)/objswap.o sdk $(STUBS)
