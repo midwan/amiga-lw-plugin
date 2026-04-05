@@ -115,9 +115,11 @@ pow_int(double base, int exp)
 
 typedef struct {
 	double ior;            /* index of refraction (1.0 - 5.0)    */
-	int    power;          /* Fresnel exponent (1 - 10)           */
+	int    reflPower;      /* reflection Fresnel exponent (1-10)  */
 	int    affectMirror;   /* modify mirror/reflection            */
 	int    affectTrans;    /* modify transparency                 */
+	int    affectDiffuse;  /* modify diffuse (inverse Fresnel)    */
+	int    diffPower;      /* diffuse Fresnel exponent (1-10)     */
 	double f0;             /* precomputed F0 from IOR             */
 } FresnelInst;
 
@@ -156,10 +158,12 @@ Create(LWError *err)
 	if (!inst)
 		return 0;
 
-	inst->ior          = FRESNEL_DEFAULT_IOR;
-	inst->power        = FRESNEL_DEFAULT_POWER;
-	inst->affectMirror = 1;
-	inst->affectTrans  = 1;
+	inst->ior           = FRESNEL_DEFAULT_IOR;
+	inst->reflPower     = FRESNEL_DEFAULT_POWER;
+	inst->affectMirror  = 1;
+	inst->affectTrans   = 1;
+	inst->affectDiffuse = 1;
+	inst->diffPower     = FRESNEL_DEFAULT_POWER;
 	compute_f0(inst);
 
 	return inst;
@@ -190,7 +194,6 @@ Load(FresnelInst *inst, const LWLoadState *ls)
 	if (ls->ioMode != LWIO_SCENE)
 		return 0;
 
-	/* IOR stored as fixed-point: ior * 1000 */
 	buf[0] = '\0';
 	(*ls->read)(ls->readData, buf, 32);
 	if (buf[0] == '\0')
@@ -201,7 +204,7 @@ Load(FresnelInst *inst, const LWLoadState *ls)
 	buf[0] = '\0';
 	(*ls->read)(ls->readData, buf, 32);
 	if (buf[0])
-		inst->power = str_to_int(buf);
+		inst->reflPower = str_to_int(buf);
 
 	buf[0] = '\0';
 	(*ls->read)(ls->readData, buf, 32);
@@ -212,6 +215,16 @@ Load(FresnelInst *inst, const LWLoadState *ls)
 	(*ls->read)(ls->readData, buf, 32);
 	if (buf[0])
 		inst->affectTrans = str_to_int(buf);
+
+	buf[0] = '\0';
+	(*ls->read)(ls->readData, buf, 32);
+	if (buf[0])
+		inst->affectDiffuse = str_to_int(buf);
+
+	buf[0] = '\0';
+	(*ls->read)(ls->readData, buf, 32);
+	if (buf[0])
+		inst->diffPower = str_to_int(buf);
 
 	compute_f0(inst);
 	return 0;
@@ -227,17 +240,22 @@ Save(FresnelInst *inst, const LWSaveState *ss)
 	if (ss->ioMode != LWIO_SCENE)
 		return 0;
 
-	/* IOR as fixed-point integer: ior * 1000 */
 	int_to_str((int)(inst->ior * 1000.0), buf, 32);
 	(*ss->write)(ss->writeData, buf, strlen(buf));
 
-	int_to_str(inst->power, buf, 32);
+	int_to_str(inst->reflPower, buf, 32);
 	(*ss->write)(ss->writeData, buf, strlen(buf));
 
 	int_to_str(inst->affectMirror, buf, 32);
 	(*ss->write)(ss->writeData, buf, strlen(buf));
 
 	int_to_str(inst->affectTrans, buf, 32);
+	(*ss->write)(ss->writeData, buf, strlen(buf));
+
+	int_to_str(inst->affectDiffuse, buf, 32);
+	(*ss->write)(ss->writeData, buf, strlen(buf));
+
+	int_to_str(inst->diffPower, buf, 32);
 	(*ss->write)(ss->writeData, buf, strlen(buf));
 
 	return 0;
@@ -271,8 +289,9 @@ Flags(FresnelInst *inst)
 
 	XCALL_INIT;
 
-	if (inst->affectMirror) f |= LWSHF_MIRROR;
-	if (inst->affectTrans)  f |= LWSHF_TRANSP;
+	if (inst->affectMirror)  f |= LWSHF_MIRROR;
+	if (inst->affectTrans)   f |= LWSHF_TRANSP;
+	if (inst->affectDiffuse) f |= LWSHF_DIFFUSE;
 
 	return f;
 }
@@ -292,20 +311,32 @@ Evaluate(FresnelInst *inst, ShaderAccess *sa)
 	if (cosAngle < 0.0) cosAngle = -cosAngle;
 	if (cosAngle > 1.0) cosAngle = 1.0;
 
-	/* Schlick's approximation */
 	oneMinusCos = 1.0 - cosAngle;
-	fresnel = inst->f0 + (1.0 - inst->f0)
-	          * pow_int(oneMinusCos, inst->power);
 
-	if (fresnel > 1.0) fresnel = 1.0;
-	if (fresnel < 0.0) fresnel = 0.0;
+	/* Reflection and transparency use reflPower */
+	if (inst->affectMirror || inst->affectTrans) {
+		fresnel = inst->f0 + (1.0 - inst->f0)
+		          * pow_int(oneMinusCos, inst->reflPower);
+		if (fresnel > 1.0) fresnel = 1.0;
+		if (fresnel < 0.0) fresnel = 0.0;
 
-	/* Blend Fresnel factor into surface properties */
-	if (inst->affectMirror)
-		sa->mirror = sa->mirror + (1.0 - sa->mirror) * fresnel;
+		if (inst->affectMirror)
+			sa->mirror = sa->mirror
+			             + (1.0 - sa->mirror) * fresnel;
 
-	if (inst->affectTrans)
-		sa->transparency *= (1.0 - fresnel);
+		if (inst->affectTrans)
+			sa->transparency *= (1.0 - fresnel);
+	}
+
+	/* Diffuse uses its own power (inverse: reduce at glancing angles) */
+	if (inst->affectDiffuse) {
+		double diffFresnel = inst->f0 + (1.0 - inst->f0)
+		                     * pow_int(oneMinusCos, inst->diffPower);
+		if (diffFresnel > 1.0) diffFresnel = 1.0;
+		if (diffFresnel < 0.0) diffFresnel = 0.0;
+
+		sa->diffuse *= (1.0 - diffFresnel);
+	}
 }
 
 /* ----------------------------------------------------------------
@@ -321,7 +352,8 @@ Interface(
 {
 	LWPanelFuncs *panl;
 	LWPanelID     pan;
-	LWControl    *ctlIOR, *ctlPower, *ctlMirror, *ctlTrans;
+	LWControl    *ctlIOR, *ctlReflPow, *ctlMirror, *ctlTrans;
+	LWControl    *ctlDiffuse, *ctlDiffPow;
 	int           iorFixed;
 	char          infoBuf[64];
 
@@ -344,28 +376,36 @@ Interface(
 		if (!pan)
 			goto fallback;
 
-		ctlIOR   = FLOAT_CTL(panl, pan, "Index of Refraction");
-		ctlPower = SLIDER_CTL(panl, pan, "Fresnel Power",
-		                      150, 1, 10);
-		ctlMirror = BOOL_CTL(panl, pan, "Affect Reflection");
-		ctlTrans  = BOOL_CTL(panl, pan, "Affect Transparency");
+		ctlIOR     = FLOAT_CTL(panl, pan, "Index of Refraction");
+		ctlMirror  = BOOL_CTL(panl, pan, "Affect Reflection");
+		ctlReflPow = SLIDER_CTL(panl, pan, "Reflection Power",
+		                        150, 1, 10);
+		ctlTrans   = BOOL_CTL(panl, pan, "Affect Transparency");
+		ctlDiffuse = BOOL_CTL(panl, pan, "Affect Diffuse");
+		ctlDiffPow = SLIDER_CTL(panl, pan, "Diffuse Power",
+		                        150, 1, 10);
 
 		SET_FLOAT(ctlIOR, inst->ior);
-		SET_INT(ctlPower, inst->power);
 		SET_INT(ctlMirror, inst->affectMirror);
+		SET_INT(ctlReflPow, inst->reflPower);
 		SET_INT(ctlTrans, inst->affectTrans);
+		SET_INT(ctlDiffuse, inst->affectDiffuse);
+		SET_INT(ctlDiffPow, inst->diffPower);
 
 		if (PAN_POST(panl, pan)) {
 			GET_FLOAT(ctlIOR, inst->ior);
-			GET_INT(ctlPower, inst->power);
 			GET_INT(ctlMirror, inst->affectMirror);
+			GET_INT(ctlReflPow, inst->reflPower);
 			GET_INT(ctlTrans, inst->affectTrans);
+			GET_INT(ctlDiffuse, inst->affectDiffuse);
+			GET_INT(ctlDiffPow, inst->diffPower);
 
-			/* Clamp values */
 			if (inst->ior < 1.0) inst->ior = 1.0;
 			if (inst->ior > 5.0) inst->ior = 5.0;
-			if (inst->power < 1) inst->power = 1;
-			if (inst->power > 10) inst->power = 10;
+			if (inst->reflPower < 1) inst->reflPower = 1;
+			if (inst->reflPower > 10) inst->reflPower = 10;
+			if (inst->diffPower < 1) inst->diffPower = 1;
+			if (inst->diffPower > 10) inst->diffPower = 10;
 
 			compute_f0(inst);
 		}
@@ -390,10 +430,16 @@ fallback:
 		if (iorFixed % 100 < 10) strcat(infoBuf, "0");
 		strcat(infoBuf, nb);
 	}
-	strcat(infoBuf, "  Power: ");
+	strcat(infoBuf, "  RPow: ");
 	{
 		char nb[12];
-		int_to_str(inst->power, nb, 12);
+		int_to_str(inst->reflPower, nb, 12);
+		strcat(infoBuf, nb);
+	}
+	strcat(infoBuf, "  DPow: ");
+	{
+		char nb[12];
+		int_to_str(inst->diffPower, nb, 12);
 		strcat(infoBuf, nb);
 	}
 	(*msg->info)("Fresnel Shader", infoBuf);
