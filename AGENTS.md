@@ -381,37 +381,26 @@ Located at: `/Users/midwan/Library/CloudStorage/OneDrive-Personal/Projects/Light
 - `LW-SDK_5.x/doc/` — 5.x docs (lwpanels.html, objacces.html, laymon.html)
 - `The.Art.of.LW.Plugins-Bman/` — PDF reference + gradient.cpp example with LWPanel UI
 
-## PBR Shader - Pending Features (next session)
+## PBR Shader - Feature Reference
 
-Two features designed but not yet written to file due to context limits:
-
-### Blurred Reflections
-- Compute reflection direction: R = V - 2*dot(V,N)*N where V = normalize(wPos - raySource)
-- Cast N rays (4/8/16) via sa->rayTrace() in a cone around R
-- Cone spread controlled by roughAmount / 200.0
-- Perturb each ray using hash3d with sample index as seed variation
-- Average returned colors, blend into sa->color weighted by sa->mirror
-- Set sa->mirror = 0 to prevent LW doubling the reflection
-- Instance fields: blurReflEnabled (int), blurReflSamples (int 4/8/16)
-
-### Environment Sampling (Indirect Lighting)  
-- Cast N rays (4/8/16) via sa->rayTrace() in hemisphere around normal
-- Reuse hemi_dirs[] array, flip rays facing away from normal
-- Weight each sample by dot(dir, normal) for cosine importance sampling
-- Average colors, add to sa->color scaled by envStrength/100
-- Boost sa->luminous slightly (envStr * 0.3) for self-illumination
-- Instance fields: envEnabled (int), envSamples (int 4/8/16), envStrength (int 0-100)
-
-### Save/Load order (18 fields total)
+### Save/Load field order (19 fields total)
 ior*1000, reflPower, affectMirror, affectTrans, affectDiffuse, diffPower,
 roughEnabled, roughAmount, aoEnabled, aoSamples, aoRadius, aoStrength,
-metallic, blurReflEnabled, blurReflSamples, envEnabled, envSamples, envStrength
+metallic, blurReflEnabled, blurReflSamples, blurReflAmount, envEnabled, envSamples, envStrength
 
-### Interface additions
-- BOOL_CTL "Blurred Reflections" + POPUP_CTL "Blur Samples" (4/8/16)
-- BOOL_CTL "Environment Lighting" + POPUP_CTL "Env Samples" (4/8/16) + SLIDER_CTL "Env Strength" (0-100)
+### Blurred Reflections (implemented)
+- Reflection direction: R = V - 2*dot(V,N)*N where V = normalize(wPos - raySource)
+- Casts N rays (4/8/16) via sa->rayTrace() in a cone around R
+- Cone spread: blurReflAmount / 200.0 (independent of roughness), perturbed via hash3d with per-sample seeds
+- Averages returned colors, blends into sa->color weighted by sa->mirror
+- Sets sa->mirror = 0 to prevent LW doubling the reflection
+- Instance fields: blurReflEnabled (int), blurReflSamples (int 4/8/16), blurReflAmount (int 0-100)
+- Flags: LWSHF_COLOR | LWSHF_MIRROR | LWSHF_RAYTRACE
 
-### Flags additions
-- blurReflEnabled or envEnabled → LWSHF_RAYTRACE
-- blurReflEnabled → LWSHF_COLOR | LWSHF_MIRROR
-- envEnabled → LWSHF_COLOR | LWSHF_LUMINOUS
+### Environment Sampling (implemented)
+- Casts N rays (4/8/16) via sa->rayTrace() in hemisphere around normal using hemi_dirs[]
+- Flips rays facing away from normal, cosine-weighted by dot(dir, normal)
+- Averages colors, adds to sa->color scaled by envStrength/100
+- Boosts sa->luminous by envStr * 0.3 for self-illumination
+- Instance fields: envEnabled (int), envSamples (int 4/8/16), envStrength (int 0-100)
+- Flags: LWSHF_COLOR | LWSHF_LUMINOUS | LWSHF_RAYTRACE

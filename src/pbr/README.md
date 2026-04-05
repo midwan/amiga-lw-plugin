@@ -1,8 +1,8 @@
 # PBR Shader — Physically-Based Rendering for LightWave 3D
 
 A combined PBR-lite shader that brings modern material concepts to LightWave 5.x
-on AmigaOS. Includes Fresnel reflection, roughness, ambient occlusion, and
-metallic mode in a single plugin.
+on AmigaOS. Includes Fresnel reflection, roughness, ambient occlusion, metallic
+mode, blurred reflections, and environment sampling in a single plugin.
 
 ## Features
 
@@ -26,6 +26,20 @@ radius, and strength.
 Switches from dielectric (glass/plastic) behavior to metallic. Metals have
 high base reflectivity, near-zero diffuse, and boosted specular — their
 appearance is dominated by reflections of the environment.
+
+### Blurred Reflections
+Replaces LightWave's single-ray mirror reflections with multi-sample cone
+tracing. Casts 4/8/16 rays around the reflection direction, with cone spread
+controlled by the Blur Spread setting (independent of roughness). The averaged
+result is blended into the surface color, producing soft, spread-out
+reflections for frosted, rough, or brushed materials.
+
+### Environment Sampling
+Approximates indirect lighting by casting 4/8/16 rays into the hemisphere
+around the surface normal. Each sample is cosine-weighted for physically
+correct importance sampling. The gathered light is added to the surface
+color and slightly boosts luminosity, giving objects a sense of being lit
+by their surroundings rather than just direct lights.
 
 ## Installation
 
@@ -64,6 +78,12 @@ Plugin ShaderInterface PBR pbr.p PBR Shader
 | AO Samples | 4/8/16 | 8 | Rays per surface point |
 | AO Radius | float | 1.0m | Maximum occlusion distance |
 | AO Strength | 0 – 100 | 50 | Occlusion darkening intensity |
+| Blurred Reflections | on/off | off | Multi-sample cone-traced reflections |
+| Blur Samples | 4/8/16 | 8 | Rays per reflection cone |
+| Blur Spread | 0 – 100 | 30 | Cone spread angle (independent of roughness) |
+| Environment Lighting | on/off | off | Hemisphere-sampled indirect light |
+| Env Samples | 4/8/16 | 8 | Rays per hemisphere sample |
+| Env Strength | 0 – 100 | 50 | Indirect lighting intensity |
 
 ### Material Presets
 
@@ -75,19 +95,25 @@ Plugin ShaderInterface PBR pbr.p PBR Shader
 **Polished metal**: Metallic on, IOR 2.0+, Roughness off
 - Set surface color to metal tint, high mirror
 
-**Brushed metal**: Metallic on, IOR 2.0+, Roughness on (30-50)
-- Roughness breaks up reflections
+**Brushed metal**: Metallic on, IOR 2.0+, Roughness on (30-50), Blurred Reflections on
+- Roughness breaks up reflections, blur softens them realistically
 
 **Plastic**: IOR 1.45, Metallic off, low Roughness (10-20)
 
-**Concrete/stone**: IOR 1.5, Metallic off, high Roughness (60-80), AO on
+**Concrete/stone**: IOR 1.5, Metallic off, high Roughness (60-80), AO on,
+Environment Lighting on (30-50) for ambient fill
 
 ### Performance Notes
 
 - **Fresnel, Roughness, Metallic**: Very fast — no extra rays, pure math
 - **Ambient Occlusion**: Slower — casts 4-16 rays per surface point. Use
-  4 samples for previews, 8-16 for final renders. On JIT-equipped emulators
-  this is quite manageable; on real 68k hardware, limit to 4 samples
+  4 samples for previews, 8-16 for final renders
+- **Blurred Reflections**: Similar cost to AO — casts 4-16 rays per reflective
+  surface point. Only active on surfaces with mirror > 0
+- **Environment Sampling**: Casts 4-16 rays per surface point for indirect
+  lighting. Combine with AO sparingly — both cast rays and costs stack
+- On JIT-equipped emulators ray-based features are quite manageable; on
+  real 68k hardware, limit ray-casting features to 4 samples each
 - All features can be independently enabled/disabled
 
 ## Scene Persistence

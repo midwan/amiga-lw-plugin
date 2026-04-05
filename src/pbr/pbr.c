@@ -154,6 +154,16 @@ typedef struct {
 
 	/* Metallic */
 	int    metallic;
+
+	/* Blurred Reflections */
+	int    blurReflEnabled;
+	int    blurReflSamples;  /* 4, 8, or 16 */
+	int    blurReflAmount;   /* 0-100 cone spread */
+
+	/* Environment Sampling */
+	int    envEnabled;
+	int    envSamples;       /* 4, 8, or 16 */
+	int    envStrength;      /* 0-100 */
 } PBRInst;
 
 /* ----------------------------------------------------------------
@@ -199,6 +209,25 @@ static const double ao_dirs[16][3] = {
 	{ 0.000,  0.707,  0.707}
 };
 
+static const double hemi_dirs[16][3] = {
+	{ 0.000,  1.000,  0.000},
+	{ 0.577,  0.577,  0.577},
+	{-0.577,  0.577,  0.577},
+	{ 0.577,  0.577, -0.577},
+	{-0.577,  0.577, -0.577},
+	{ 0.707,  0.707,  0.000},
+	{-0.707,  0.707,  0.000},
+	{ 0.000,  0.707,  0.707},
+	{ 0.000,  0.707, -0.707},
+	{ 0.383,  0.924,  0.000},
+	{-0.383,  0.924,  0.000},
+	{ 0.000,  0.924,  0.383},
+	{ 0.000,  0.924, -0.383},
+	{ 0.408,  0.816,  0.408},
+	{-0.408,  0.816,  0.408},
+	{ 0.408,  0.816, -0.408}
+};
+
 /* ----------------------------------------------------------------
  * Handler callbacks
  * ---------------------------------------------------------------- */
@@ -225,6 +254,12 @@ Create(LWError *err)
 	inst->aoRadius      = 100;
 	inst->aoStrength    = 50;
 	inst->metallic      = 0;
+	inst->blurReflEnabled = 0;
+	inst->blurReflSamples = 8;
+	inst->blurReflAmount  = 30;
+	inst->envEnabled    = 0;
+	inst->envSamples    = 8;
+	inst->envStrength   = 50;
 	compute_f0(inst);
 
 	return inst;
@@ -296,6 +331,24 @@ Load(PBRInst *inst, const LWLoadState *ls)
 	buf[0] = '\0'; (*ls->read)(ls->readData, buf, 32);
 	if (buf[0]) inst->metallic = str_to_int(buf);
 
+	buf[0] = '\0'; (*ls->read)(ls->readData, buf, 32);
+	if (buf[0]) inst->blurReflEnabled = str_to_int(buf);
+
+	buf[0] = '\0'; (*ls->read)(ls->readData, buf, 32);
+	if (buf[0]) inst->blurReflSamples = str_to_int(buf);
+
+	buf[0] = '\0'; (*ls->read)(ls->readData, buf, 32);
+	if (buf[0]) inst->blurReflAmount = str_to_int(buf);
+
+	buf[0] = '\0'; (*ls->read)(ls->readData, buf, 32);
+	if (buf[0]) inst->envEnabled = str_to_int(buf);
+
+	buf[0] = '\0'; (*ls->read)(ls->readData, buf, 32);
+	if (buf[0]) inst->envSamples = str_to_int(buf);
+
+	buf[0] = '\0'; (*ls->read)(ls->readData, buf, 32);
+	if (buf[0]) inst->envStrength = str_to_int(buf);
+
 	compute_f0(inst);
 	return 0;
 }
@@ -348,6 +401,24 @@ Save(PBRInst *inst, const LWSaveState *ss)
 	int_to_str(inst->metallic, buf, 32);
 	(*ss->write)(ss->writeData, buf, strlen(buf));
 
+	int_to_str(inst->blurReflEnabled, buf, 32);
+	(*ss->write)(ss->writeData, buf, strlen(buf));
+
+	int_to_str(inst->blurReflSamples, buf, 32);
+	(*ss->write)(ss->writeData, buf, strlen(buf));
+
+	int_to_str(inst->blurReflAmount, buf, 32);
+	(*ss->write)(ss->writeData, buf, strlen(buf));
+
+	int_to_str(inst->envEnabled, buf, 32);
+	(*ss->write)(ss->writeData, buf, strlen(buf));
+
+	int_to_str(inst->envSamples, buf, 32);
+	(*ss->write)(ss->writeData, buf, strlen(buf));
+
+	int_to_str(inst->envStrength, buf, 32);
+	(*ss->write)(ss->writeData, buf, strlen(buf));
+
 	return 0;
 }
 
@@ -386,6 +457,12 @@ Flags(PBRInst *inst)
 
 	if (inst->aoEnabled)
 		f |= LWSHF_DIFFUSE | LWSHF_LUMINOUS | LWSHF_RAYTRACE;
+
+	if (inst->blurReflEnabled)
+		f |= LWSHF_COLOR | LWSHF_MIRROR | LWSHF_RAYTRACE;
+
+	if (inst->envEnabled)
+		f |= LWSHF_COLOR | LWSHF_LUMINOUS | LWSHF_RAYTRACE;
 
 	return f;
 }
@@ -495,14 +572,135 @@ Evaluate(PBRInst *inst, ShaderAccess *sa)
 			sa->luminous *= aoFactor;
 		}
 	}
+
+	/* --- Blurred Reflections: cone-traced rays around reflection dir --- */
+	if (inst->blurReflEnabled && inst->blurReflSamples > 0
+	    && sa->rayTrace && sa->mirror > 0.001) {
+		double viewDir[3], reflDir[3], dot_vn;
+		double spread, dist, px, py, pz;
+		double dir[3], col[3], pos[3];
+		double accR = 0.0, accG = 0.0, accB = 0.0;
+		int    nSamp = inst->blurReflSamples;
+		int    validSamples = 0;
+		int    i;
+
+		if (nSamp > 16) nSamp = 16;
+		spread = inst->blurReflAmount / 200.0;
+		if (spread < 0.001) spread = 0.001;
+
+		viewDir[0] = sa->wPos[0] - sa->raySource[0];
+		viewDir[1] = sa->wPos[1] - sa->raySource[1];
+		viewDir[2] = sa->wPos[2] - sa->raySource[2];
+		vec_normalize(viewDir);
+
+		dot_vn = viewDir[0]*sa->wNorm[0] + viewDir[1]*sa->wNorm[1]
+		       + viewDir[2]*sa->wNorm[2];
+		reflDir[0] = viewDir[0] - 2.0 * dot_vn * sa->wNorm[0];
+		reflDir[1] = viewDir[1] - 2.0 * dot_vn * sa->wNorm[1];
+		reflDir[2] = viewDir[2] - 2.0 * dot_vn * sa->wNorm[2];
+		vec_normalize(reflDir);
+
+		pos[0] = sa->wPos[0] + sa->wNorm[0] * 0.001;
+		pos[1] = sa->wPos[1] + sa->wNorm[1] * 0.001;
+		pos[2] = sa->wPos[2] + sa->wNorm[2] * 0.001;
+
+		for (i = 0; i < nSamp; i++) {
+			px = hash3d(sa->oPos[0], sa->oPos[1], sa->oPos[2],
+			            50000u + (unsigned int)i * 7919u) * spread;
+			py = hash3d(sa->oPos[0], sa->oPos[1], sa->oPos[2],
+			            60000u + (unsigned int)i * 6271u) * spread;
+			pz = hash3d(sa->oPos[0], sa->oPos[1], sa->oPos[2],
+			            70000u + (unsigned int)i * 5381u) * spread;
+
+			dir[0] = reflDir[0] + px;
+			dir[1] = reflDir[1] + py;
+			dir[2] = reflDir[2] + pz;
+			vec_normalize(dir);
+
+			col[0] = col[1] = col[2] = 0.0;
+			dist = (*sa->rayTrace)(pos, dir, col);
+			if (dist > 0.0) {
+				accR += col[0];
+				accG += col[1];
+				accB += col[2];
+				validSamples++;
+			}
+		}
+
+		if (validSamples > 0) {
+			double invN = 1.0 / (double)validSamples;
+			double mirrorWt = sa->mirror;
+			sa->color[0] = sa->color[0] * (1.0 - mirrorWt)
+			             + accR * invN * mirrorWt;
+			sa->color[1] = sa->color[1] * (1.0 - mirrorWt)
+			             + accG * invN * mirrorWt;
+			sa->color[2] = sa->color[2] * (1.0 - mirrorWt)
+			             + accB * invN * mirrorWt;
+			sa->mirror = 0.0;
+		}
+	}
+
+	/* --- Environment Sampling: hemisphere rayTrace for indirect light --- */
+	if (inst->envEnabled && inst->envSamples > 0 && sa->rayTrace) {
+		double envStr = inst->envStrength / 100.0;
+		int    nSamp = inst->envSamples;
+		double accR = 0.0, accG = 0.0, accB = 0.0;
+		double totalWeight = 0.0;
+		int    i;
+		double pos[3];
+
+		if (nSamp > 16) nSamp = 16;
+
+		pos[0] = sa->wPos[0] + sa->wNorm[0] * 0.001;
+		pos[1] = sa->wPos[1] + sa->wNorm[1] * 0.001;
+		pos[2] = sa->wPos[2] + sa->wNorm[2] * 0.001;
+
+		for (i = 0; i < nSamp; i++) {
+			double dir[3], col[3], dot, dist;
+
+			dir[0] = hemi_dirs[i][0];
+			dir[1] = hemi_dirs[i][1];
+			dir[2] = hemi_dirs[i][2];
+
+			dot = dir[0]*sa->wNorm[0] + dir[1]*sa->wNorm[1]
+			    + dir[2]*sa->wNorm[2];
+			if (dot <= 0.0) {
+				dir[0] = -dir[0];
+				dir[1] = -dir[1];
+				dir[2] = -dir[2];
+				dot = -dot;
+			}
+
+			col[0] = col[1] = col[2] = 0.0;
+			dist = (*sa->rayTrace)(pos, dir, col);
+			(void)dist;
+
+			accR += col[0] * dot;
+			accG += col[1] * dot;
+			accB += col[2] * dot;
+			totalWeight += dot;
+		}
+
+		if (totalWeight > 0.0) {
+			double invW = envStr / totalWeight;
+			sa->color[0] += accR * invW;
+			sa->color[1] += accG * invW;
+			sa->color[2] += accB * invW;
+			if (sa->color[0] > 1.0) sa->color[0] = 1.0;
+			if (sa->color[1] > 1.0) sa->color[1] = 1.0;
+			if (sa->color[2] > 1.0) sa->color[2] = 1.0;
+			sa->luminous += envStr * 0.3;
+			if (sa->luminous > 1.0) sa->luminous = 1.0;
+		}
+	}
 }
 
 /* ----------------------------------------------------------------
  * Interface
  * ---------------------------------------------------------------- */
 
-static const char *aoSampleItems[] = { "4", "8", "16", 0 };
-static int aoSampleValues[] = { 4, 8, 16 };
+static const char *aoSampleItems[] = { "Off", "4", "8", "16", 0 };
+static int aoSampleValues[] = { 0, 4, 8, 16 };
 
 XCALL_(static int)
 Interface(
@@ -513,11 +711,12 @@ Interface(
 {
 	LWPanelFuncs *panl;
 	LWPanelID     pan;
-	LWControl    *ctlIOR, *ctlReflPow, *ctlMirror, *ctlTrans;
-	LWControl    *ctlDiffuse, *ctlDiffPow, *ctlMetallic;
-	LWControl    *ctlRoughEn, *ctlRoughAmt;
-	LWControl    *ctlAOEn, *ctlAOSamp, *ctlAORadius, *ctlAOStr;
-	int           aoIdx;
+	LWControl    *ctlIOR, *ctlReflPow, *ctlDiffPow, *ctlMetallic;
+	LWControl    *ctlMirror, *ctlTrans, *ctlDiffuse, *ctlRoughEn, *ctlRoughAmt;
+	LWControl    *ctlAOSamp, *ctlAORadius, *ctlAOStr;
+	LWControl    *ctlBlurSamp, *ctlBlurAmt;
+	LWControl    *ctlEnvSamp, *ctlEnvStr;
+	int           aoIdx, blurIdx, envIdx;
 	char          infoBuf[80];
 
 	XCALL_INIT;
@@ -533,10 +732,9 @@ Interface(
 		static LWValue fval = {LWT_FLOAT};
 		(void)fval;
 
-		pan = PAN_CREATE(panl, "PBR Shader");
+		pan = PAN_CREATE(panl, "PBR v0.3.0 (c) D. Panokostas");
 		if (!pan) goto fallback;
 
-		/* Fresnel section */
 		ctlIOR      = FLOAT_CTL(panl, pan, "Index of Refraction");
 		ctlMetallic = BOOL_CTL(panl, pan, "Metallic");
 		ctlMirror   = BOOL_CTL(panl, pan, "Affect Reflection");
@@ -544,16 +742,56 @@ Interface(
 		ctlTrans    = BOOL_CTL(panl, pan, "Affect Transparency");
 		ctlDiffuse  = BOOL_CTL(panl, pan, "Affect Diffuse");
 		ctlDiffPow  = SLIDER_CTL(panl, pan, "Diffuse Power", 150, 1, 10);
-
-		/* Roughness section */
 		ctlRoughEn  = BOOL_CTL(panl, pan, "Enable Roughness");
 		ctlRoughAmt = SLIDER_CTL(panl, pan, "Roughness Amount", 150, 0, 100);
 
-		/* AO section */
-		ctlAOEn     = BOOL_CTL(panl, pan, "Enable Ambient Occlusion");
-		ctlAOSamp   = POPUP_CTL(panl, pan, "AO Samples", aoSampleItems);
+		ctlAOSamp   = POPUP_CTL(panl, pan, "Ambient Occlusion", aoSampleItems);
 		ctlAORadius = FLOAT_CTL(panl, pan, "AO Radius (m)");
 		ctlAOStr    = SLIDER_CTL(panl, pan, "AO Strength", 150, 0, 100);
+
+		ctlBlurSamp = POPUP_CTL(panl, pan, "Blurred Reflections", aoSampleItems);
+		ctlBlurAmt  = SLIDER_CTL(panl, pan, "Blur Spread", 150, 0, 100);
+
+		ctlEnvSamp  = POPUP_CTL(panl, pan, "Environment Lighting", aoSampleItems);
+		ctlEnvStr   = SLIDER_CTL(panl, pan, "Env Strength", 150, 0, 100);
+
+		{
+			int rowH, halfX, cy, cx;
+			rowH = CON_H(ctlMetallic);
+			halfX = PAN_GETW(panl, pan) / 2;
+
+			cy = CON_Y(ctlMetallic);
+			MOVE_CON(ctlMirror, halfX, cy);
+
+			cy = CON_Y(ctlReflPow); cx = CON_X(ctlReflPow);
+			MOVE_CON(ctlReflPow, cx, cy - rowH);
+
+			cy = CON_Y(ctlTrans); cx = CON_X(ctlTrans);
+			MOVE_CON(ctlTrans, cx, cy - rowH);
+			cy = CON_Y(ctlTrans);
+			MOVE_CON(ctlDiffuse, halfX, cy);
+
+			cy = CON_Y(ctlDiffPow); cx = CON_X(ctlDiffPow);
+			MOVE_CON(ctlDiffPow, cx, cy - 2 * rowH);
+			cy = CON_Y(ctlRoughEn); cx = CON_X(ctlRoughEn);
+			MOVE_CON(ctlRoughEn, cx, cy - 2 * rowH);
+			cy = CON_Y(ctlRoughAmt); cx = CON_X(ctlRoughAmt);
+			MOVE_CON(ctlRoughAmt, cx, cy - 2 * rowH);
+			cy = CON_Y(ctlAOSamp); cx = CON_X(ctlAOSamp);
+			MOVE_CON(ctlAOSamp, cx, cy - 2 * rowH);
+			cy = CON_Y(ctlAORadius); cx = CON_X(ctlAORadius);
+			MOVE_CON(ctlAORadius, cx, cy - 2 * rowH);
+			cy = CON_Y(ctlAOStr); cx = CON_X(ctlAOStr);
+			MOVE_CON(ctlAOStr, cx, cy - 2 * rowH);
+			cy = CON_Y(ctlBlurSamp); cx = CON_X(ctlBlurSamp);
+			MOVE_CON(ctlBlurSamp, cx, cy - 2 * rowH);
+			cy = CON_Y(ctlBlurAmt); cx = CON_X(ctlBlurAmt);
+			MOVE_CON(ctlBlurAmt, cx, cy - 2 * rowH);
+			cy = CON_Y(ctlEnvSamp); cx = CON_X(ctlEnvSamp);
+			MOVE_CON(ctlEnvSamp, cx, cy - 2 * rowH);
+			cy = CON_Y(ctlEnvStr); cx = CON_X(ctlEnvStr);
+			MOVE_CON(ctlEnvStr, cx, cy - 2 * rowH);
+		}
 
 		/* Set values */
 		SET_FLOAT(ctlIOR, inst->ior);
@@ -565,16 +803,27 @@ Interface(
 		SET_INT(ctlDiffPow, inst->diffPower);
 		SET_INT(ctlRoughEn, inst->roughEnabled);
 		SET_INT(ctlRoughAmt, inst->roughAmount);
-		SET_INT(ctlAOEn, inst->aoEnabled);
-		aoIdx = (inst->aoSamples <= 4) ? 0 : (inst->aoSamples <= 8) ? 1 : 2;
+		aoIdx = inst->aoEnabled
+		      ? ((inst->aoSamples <= 4) ? 1 : (inst->aoSamples <= 8) ? 2 : 3)
+		      : 0;
 		SET_INT(ctlAOSamp, aoIdx);
 		{
 			double r = inst->aoRadius / 100.0;
 			SET_FLOAT(ctlAORadius, r);
 		}
 		SET_INT(ctlAOStr, inst->aoStrength);
+		blurIdx = inst->blurReflEnabled
+		        ? ((inst->blurReflSamples <= 4) ? 1 : (inst->blurReflSamples <= 8) ? 2 : 3)
+		        : 0;
+		SET_INT(ctlBlurSamp, blurIdx);
+		SET_INT(ctlBlurAmt, inst->blurReflAmount);
+		envIdx = inst->envEnabled
+		       ? ((inst->envSamples <= 4) ? 1 : (inst->envSamples <= 8) ? 2 : 3)
+		       : 0;
+		SET_INT(ctlEnvSamp, envIdx);
+		SET_INT(ctlEnvStr, inst->envStrength);
 
-		if (PAN_POST(panl, pan)) {
+		if ((*panl->open)(pan, PANF_BLOCKING | PANF_CANCEL)) {
 			GET_FLOAT(ctlIOR, inst->ior);
 			GET_INT(ctlMetallic, inst->metallic);
 			GET_INT(ctlMirror, inst->affectMirror);
@@ -584,15 +833,23 @@ Interface(
 			GET_INT(ctlDiffPow, inst->diffPower);
 			GET_INT(ctlRoughEn, inst->roughEnabled);
 			GET_INT(ctlRoughAmt, inst->roughAmount);
-			GET_INT(ctlAOEn, inst->aoEnabled);
 			GET_INT(ctlAOSamp, aoIdx);
-			inst->aoSamples = (aoIdx < 3) ? aoSampleValues[aoIdx] : 8;
+			inst->aoEnabled = (aoIdx > 0) ? 1 : 0;
+			inst->aoSamples = (aoIdx > 0 && aoIdx < 4) ? aoSampleValues[aoIdx] : 8;
 			{
 				double r;
 				GET_FLOAT(ctlAORadius, r);
 				inst->aoRadius = (int)(r * 100.0);
 			}
 			GET_INT(ctlAOStr, inst->aoStrength);
+			GET_INT(ctlBlurSamp, blurIdx);
+			inst->blurReflEnabled = (blurIdx > 0) ? 1 : 0;
+			inst->blurReflSamples = (blurIdx > 0 && blurIdx < 4) ? aoSampleValues[blurIdx] : 8;
+			GET_INT(ctlBlurAmt, inst->blurReflAmount);
+			GET_INT(ctlEnvSamp, envIdx);
+			inst->envEnabled = (envIdx > 0) ? 1 : 0;
+			inst->envSamples = (envIdx > 0 && envIdx < 4) ? aoSampleValues[envIdx] : 8;
+			GET_INT(ctlEnvStr, inst->envStrength);
 
 			/* Clamp */
 			if (inst->ior < 1.0) inst->ior = 1.0;
@@ -606,6 +863,10 @@ Interface(
 			if (inst->aoRadius < 1) inst->aoRadius = 1;
 			if (inst->aoStrength < 0) inst->aoStrength = 0;
 			if (inst->aoStrength > 100) inst->aoStrength = 100;
+			if (inst->blurReflAmount < 0) inst->blurReflAmount = 0;
+			if (inst->blurReflAmount > 100) inst->blurReflAmount = 100;
+			if (inst->envStrength < 0) inst->envStrength = 0;
+			if (inst->envStrength > 100) inst->envStrength = 100;
 
 			compute_f0(inst);
 		}
@@ -634,6 +895,8 @@ fallback:
 			strcat(infoBuf, nb);
 		}
 		if (inst->aoEnabled) strcat(infoBuf, " +AO");
+		if (inst->blurReflEnabled) strcat(infoBuf, " +Blur");
+		if (inst->envEnabled) strcat(infoBuf, " +Env");
 	}
 	(*msg->info)("PBR Shader", infoBuf);
 	return AFUNC_OK;

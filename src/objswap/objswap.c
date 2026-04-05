@@ -618,7 +618,7 @@ Interface(
 		static LWValue ival = {LWT_INTEGER};
 		(void)ival;
 
-		pan = PAN_CREATE(panl, "ObjSwap Settings");
+		pan = PAN_CREATE(panl, "ObjSwap v0.3.0 (c) D. Panokostas");
 		if (!pan)
 			goto fallback;
 
@@ -651,7 +651,7 @@ Interface(
 			(void)listCtl;
 		}
 
-		PAN_POST(panl, pan);
+		(*panl->open)(pan, PANF_BLOCKING | PANF_CANCEL);
 		PAN_KILL(panl, pan);
 		ui_inst = 0;
 		return AFUNC_OK;

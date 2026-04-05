@@ -372,7 +372,7 @@ Interface(
 		static LWValue fval = {LWT_FLOAT};
 		(void)fval;
 
-		pan = PAN_CREATE(panl, "Fresnel Shader");
+		pan = PAN_CREATE(panl, "Fresnel v0.3.0 (c) D. Panokostas");
 		if (!pan)
 			goto fallback;
 
@@ -392,7 +392,7 @@ Interface(
 		SET_INT(ctlDiffuse, inst->affectDiffuse);
 		SET_INT(ctlDiffPow, inst->diffPower);
 
-		if (PAN_POST(panl, pan)) {
+		if ((*panl->open)(pan, PANF_BLOCKING | PANF_CANCEL)) {
 			GET_FLOAT(ctlIOR, inst->ior);
 			GET_INT(ctlMirror, inst->affectMirror);
 			GET_INT(ctlReflPow, inst->reflPower);
