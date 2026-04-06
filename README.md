@@ -31,6 +31,14 @@ multi-sample rays around reflection direction), and environment sampling (indire
 lighting via hemisphere ray casting with cosine weighting) in a single plugin.
 Each feature can be independently enabled and configured.
 
+### SoftShadow
+
+Soft shadow shader that adds penumbra to raytrace shadows. For each surface
+point in hard shadow, casts rays toward offset positions around the light
+source. Where some rays reach the light and others are blocked, a soft
+penumbra edge is produced. Configurable light size, sample count, and
+strength. Apply to any surface that receives raytrace shadows.
+
 ## Toolchain
 
 Uses `sacredbanana/amiga-compiler:m68k-amigaos` Docker image providing:
@@ -45,6 +53,7 @@ Uses `sacredbanana/amiga-compiler:m68k-amigaos` Docker image providing:
 ./build.sh objswap  # Build ObjSwap only
 ./build.sh fresnel  # Build Fresnel only
 ./build.sh pbr      # Build PBR Shader only
+./build.sh softshadow # Build SoftShadow only
 ./build.sh clean    # Clean build artifacts
 ```
 
@@ -62,6 +71,8 @@ Plugin ShaderHandler Fresnel fresnel.p Fresnel
 Plugin ShaderInterface Fresnel fresnel.p Fresnel
 Plugin ShaderHandler PBR pbr.p PBR Shader
 Plugin ShaderInterface PBR pbr.p PBR Shader
+Plugin ShaderHandler SoftShadow softshadow.p SoftShadow
+Plugin ShaderInterface SoftShadow softshadow.p SoftShadow
 ```
 
 ## SDK
@@ -87,5 +98,6 @@ library, patched for GCC compatibility:
 └── src/
     ├── objswap/          # ObjSwap plugin source
     ├── fresnel/          # Fresnel shader source
-    └── pbr/              # PBR shader source
+    ├── pbr/              # PBR shader source
+    └── softshadow/       # Soft shadow shader source
 ```
