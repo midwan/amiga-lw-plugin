@@ -618,7 +618,7 @@ Interface(
 		static LWValue ival = {LWT_INTEGER};
 		(void)ival;
 
-		pan = PAN_CREATE(panl, "ObjSwap v0.3.0 (c) D. Panokostas");
+		pan = PAN_CREATE(panl, "ObjSwap v" PLUGIN_VERSION " (c) D. Panokostas");
 		if (!pan)
 			goto fallback;
 

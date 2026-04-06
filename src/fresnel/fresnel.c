@@ -372,7 +372,7 @@ Interface(
 		static LWValue fval = {LWT_FLOAT};
 		(void)fval;
 
-		pan = PAN_CREATE(panl, "Fresnel v0.3.0 (c) D. Panokostas");
+		pan = PAN_CREATE(panl, "Fresnel v" PLUGIN_VERSION " (c) D. Panokostas");
 		if (!pan)
 			goto fallback;
 

@@ -13,8 +13,9 @@ SDK_LIB  = sdk/lib
 
 SRC      = src
 BUILD    = build
+PVER     = $(shell cat VERSION)
 
-CFLAGS   = -noixemul -m68020 -O2 -Wall -I$(SDK_INC)
+CFLAGS   = -noixemul -m68020 -O2 -Wall -I$(SDK_INC) -DPLUGIN_VERSION=\"$(PVER)\"
 LDFLAGS  = -noixemul -nostartfiles -m68020
 LIBS     = $(SDK_LIB)/server.a -lm -lgcc
 

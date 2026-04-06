@@ -286,9 +286,6 @@ Load(PBRInst *inst, const LWLoadState *ls)
 	char buf[32];
 	XCALL_INIT;
 
-	if (ls->ioMode != LWIO_SCENE)
-		return 0;
-
 	buf[0] = '\0';
 	(*ls->read)(ls->readData, buf, 32);
 	if (buf[0] == '\0')
@@ -358,9 +355,6 @@ Save(PBRInst *inst, const LWSaveState *ss)
 {
 	char buf[32];
 	XCALL_INIT;
-
-	if (ss->ioMode != LWIO_SCENE)
-		return 0;
 
 	int_to_str((int)(inst->ior * 1000.0), buf, 32);
 	(*ss->write)(ss->writeData, buf, strlen(buf));
@@ -730,65 +724,76 @@ Interface(
 		static LWValue fval = {LWT_FLOAT};
 		(void)fval;
 
-		pan = PAN_CREATE(panl, "PBR v0.3.0 (c) D. Panokostas");
+		pan = PAN_CREATE(panl, "PBR v" PLUGIN_VERSION " (c) D. Panokostas");
 		if (!pan) goto fallback;
 
-		ctlIOR      = FLOAT_CTL(panl, pan, "Index of Refraction");
+		ctlIOR      = FLOAT_CTL(panl, pan, "IOR");
 		ctlMetallic = BOOL_CTL(panl, pan, "Metallic");
-		ctlMirror   = BOOL_CTL(panl, pan, "Affect Reflection");
+		ctlMirror   = BOOL_CTL(panl, pan, "Affect Refl");
 		ctlReflPow  = SLIDER_CTL(panl, pan, "Reflection Power", 150, 1, 10);
-		ctlTrans    = BOOL_CTL(panl, pan, "Affect Transparency");
-		ctlDiffuse  = BOOL_CTL(panl, pan, "Affect Diffuse");
+		ctlTrans    = BOOL_CTL(panl, pan, "Affect Trans");
+		ctlDiffuse  = BOOL_CTL(panl, pan, "Affect Diff");
 		ctlDiffPow  = SLIDER_CTL(panl, pan, "Diffuse Power", 150, 1, 10);
-		ctlRoughEn  = BOOL_CTL(panl, pan, "Enable Roughness");
-		ctlRoughAmt = SLIDER_CTL(panl, pan, "Roughness Amount", 150, 0, 100);
-
-		ctlAOSamp   = POPUP_CTL(panl, pan, "Ambient Occlusion", aoSampleItems);
-		ctlAORadius = FLOAT_CTL(panl, pan, "AO Radius (m)");
+		ctlRoughEn  = BOOL_CTL(panl, pan, "Roughness");
+		ctlRoughAmt = INT_CTL(panl, pan, "");
+		ctlAOSamp   = POPUP_CTL(panl, pan, "AO", aoSampleItems);
+		ctlAORadius = FLOAT_CTL(panl, pan, "Radius");
 		ctlAOStr    = SLIDER_CTL(panl, pan, "AO Strength", 150, 0, 100);
-
-		ctlBlurSamp = POPUP_CTL(panl, pan, "Blurred Reflections", aoSampleItems);
-		ctlBlurAmt  = SLIDER_CTL(panl, pan, "Blur Spread", 150, 0, 100);
-
-		ctlEnvSamp  = POPUP_CTL(panl, pan, "Environment Lighting", aoSampleItems);
-		ctlEnvStr   = SLIDER_CTL(panl, pan, "Env Strength", 150, 0, 100);
+		ctlBlurSamp = POPUP_CTL(panl, pan, "Blur Refl", aoSampleItems);
+		ctlBlurAmt  = INT_CTL(panl, pan, "Spread");
+		ctlEnvSamp  = POPUP_CTL(panl, pan, "Env Light", aoSampleItems);
+		ctlEnvStr   = INT_CTL(panl, pan, "Strength");
 
 		{
-			int rowH, halfX, cy, cx;
+			int rowH, halfX, cy, cx, shift;
 			rowH = CON_H(ctlMetallic);
 			halfX = PAN_GETW(panl, pan) / 2;
+			shift = 0;
 
 			cy = CON_Y(ctlMetallic);
 			MOVE_CON(ctlMirror, halfX, cy);
+			shift += rowH;
 
 			cy = CON_Y(ctlReflPow); cx = CON_X(ctlReflPow);
-			MOVE_CON(ctlReflPow, cx, cy - rowH);
+			MOVE_CON(ctlReflPow, cx, cy - shift);
 
 			cy = CON_Y(ctlTrans); cx = CON_X(ctlTrans);
-			MOVE_CON(ctlTrans, cx, cy - rowH);
+			MOVE_CON(ctlTrans, cx, cy - shift);
 			cy = CON_Y(ctlTrans);
 			MOVE_CON(ctlDiffuse, halfX, cy);
+			shift += rowH;
 
 			cy = CON_Y(ctlDiffPow); cx = CON_X(ctlDiffPow);
-			MOVE_CON(ctlDiffPow, cx, cy - 2 * rowH);
+			MOVE_CON(ctlDiffPow, cx, cy - shift);
+
 			cy = CON_Y(ctlRoughEn); cx = CON_X(ctlRoughEn);
-			MOVE_CON(ctlRoughEn, cx, cy - 2 * rowH);
-			cy = CON_Y(ctlRoughAmt); cx = CON_X(ctlRoughAmt);
-			MOVE_CON(ctlRoughAmt, cx, cy - 2 * rowH);
+			MOVE_CON(ctlRoughEn, cx, cy - shift);
+			cy = CON_Y(ctlRoughEn);
+			MOVE_CON(ctlRoughAmt, halfX, cy);
+			shift += rowH;
+
 			cy = CON_Y(ctlAOSamp); cx = CON_X(ctlAOSamp);
-			MOVE_CON(ctlAOSamp, cx, cy - 2 * rowH);
-			cy = CON_Y(ctlAORadius); cx = CON_X(ctlAORadius);
-			MOVE_CON(ctlAORadius, cx, cy - 2 * rowH);
+			MOVE_CON(ctlAOSamp, cx, cy - shift);
+			cy = CON_Y(ctlAOSamp);
+			MOVE_CON(ctlAORadius, halfX, cy);
+			shift += rowH;
+
 			cy = CON_Y(ctlAOStr); cx = CON_X(ctlAOStr);
-			MOVE_CON(ctlAOStr, cx, cy - 2 * rowH);
+			MOVE_CON(ctlAOStr, cx, cy - shift);
+
 			cy = CON_Y(ctlBlurSamp); cx = CON_X(ctlBlurSamp);
-			MOVE_CON(ctlBlurSamp, cx, cy - 2 * rowH);
-			cy = CON_Y(ctlBlurAmt); cx = CON_X(ctlBlurAmt);
-			MOVE_CON(ctlBlurAmt, cx, cy - 2 * rowH);
+			MOVE_CON(ctlBlurSamp, cx, cy - shift);
+			cy = CON_Y(ctlBlurSamp);
+			MOVE_CON(ctlBlurAmt, halfX, cy);
+			shift += rowH;
+
 			cy = CON_Y(ctlEnvSamp); cx = CON_X(ctlEnvSamp);
-			MOVE_CON(ctlEnvSamp, cx, cy - 2 * rowH);
-			cy = CON_Y(ctlEnvStr); cx = CON_X(ctlEnvStr);
-			MOVE_CON(ctlEnvStr, cx, cy - 2 * rowH);
+			MOVE_CON(ctlEnvSamp, cx, cy - shift);
+			cy = CON_Y(ctlEnvSamp);
+			MOVE_CON(ctlEnvStr, halfX, cy);
+
+			cy = CON_Y(ctlEnvStr);
+			PAN_SETH(panl, pan, cy + 3 * rowH);
 		}
 
 		/* Set values */
@@ -798,7 +803,6 @@ Interface(
 		SET_INT(ctlReflPow, inst->reflPower);
 		SET_INT(ctlTrans, inst->affectTrans);
 		SET_INT(ctlDiffuse, inst->affectDiffuse);
-		SET_INT(ctlDiffPow, inst->diffPower);
 		SET_INT(ctlRoughEn, inst->roughEnabled);
 		SET_INT(ctlRoughAmt, inst->roughAmount);
 		aoIdx = inst->aoEnabled
