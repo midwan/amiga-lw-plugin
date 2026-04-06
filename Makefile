@@ -84,9 +84,18 @@ $(BUILD)/pbr.p: $(BUILD)/pbr.o sdk $(STUBS)
 
 pbr: $(BUILD)/pbr.p
 
+# SoftShadow - Soft shadow penumbra shader
+$(BUILD)/softshadow.o: $(SRC)/softshadow/softshadow.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD)/softshadow.p: $(BUILD)/softshadow.o sdk $(STUBS)
+	$(call build-plugin,$@,$<)
+
+softshadow: $(BUILD)/softshadow.p
+
 # ---- Targets ----
 
-all: sdk objswap fresnel pbr
+all: sdk objswap fresnel pbr softshadow
 
 clean:
 	rm -f $(BUILD)/*.o $(BUILD)/*.p $(SDK_LIB)/server.a $(SDK_LIB)/serv_gcc.o
