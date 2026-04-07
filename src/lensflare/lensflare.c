@@ -109,15 +109,25 @@ static const double streak_dy[6] = {
 	0.000, 0.866, 0.866, 0.000, -0.866, -0.866
 };
 
+static const double rot_cos[8] = {
+	1.000, 0.991, 0.966, 0.924, 0.866, 0.793, 0.707, 0.609
+};
+static const double rot_sin[8] = {
+	0.000, 0.131, 0.259, 0.383, 0.500, 0.609, 0.707, 0.793
+};
+
 /* ----------------------------------------------------------------
  * Types
  * ---------------------------------------------------------------- */
 
+#define MAX_DETECT 32
 #define MAX_FLARES 8
 
 typedef struct {
 	int x, y;
 	int brightness;
+	int accumBright;
+	int pixelCount;
 	double depth;
 } FlareSource;
 
@@ -127,6 +137,8 @@ typedef struct {
 	int    streakLength;
 	int    intensity;
 	int    streakCount;
+	int    randomRotation;
+	int    showRing;
 } LensFlareInst;
 
 /* ----------------------------------------------------------------
@@ -153,6 +165,8 @@ Create(LWError *err)
 	inst->streakLength = 200;
 	inst->intensity   = 80;
 	inst->streakCount = 6;
+	inst->randomRotation = 1;
+	inst->showRing = 1;
 
 	return inst;
 }
@@ -195,6 +209,8 @@ Load(LensFlareInst *inst, const LWLoadState *ls)
 	p = lf_parse_int(p, &v); inst->streakLength = v;
 	p = lf_parse_int(p, &v); inst->intensity = v;
 	p = lf_parse_int(p, &v); inst->streakCount = v;
+	p = lf_parse_int(p, &v); inst->randomRotation = v;
+	p = lf_parse_int(p, &v); inst->showRing = v;
 
 	if (inst->threshold < 0) inst->threshold = 0;
 	if (inst->threshold > 255) inst->threshold = 255;
@@ -214,6 +230,8 @@ Save(LensFlareInst *inst, const LWSaveState *ss)
 	lf_append_int(buf, &pos, inst->streakLength);
 	lf_append_int(buf, &pos, inst->intensity);
 	lf_append_int(buf, &pos, inst->streakCount);
+	lf_append_int(buf, &pos, inst->randomRotation);
+	lf_append_int(buf, &pos, inst->showRing);
 
 	(*ss->write)(ss->writeData, buf, pos);
 
@@ -223,8 +241,9 @@ Save(LensFlareInst *inst, const LWSaveState *ss)
 XCALL_(static void)
 Process(LensFlareInst *inst, const FilterAccess *fa)
 {
+	FlareSource detect[MAX_DETECT];
 	FlareSource flares[MAX_FLARES];
-	int numFlares = 0;
+	int numDetect = 0, numFlares = 0;
 	int x, y, i, s;
 	double inten;
 	int thresh, gradR, strkLen, nStrk;
@@ -248,33 +267,73 @@ Process(LensFlareInst *inst, const FilterAccess *fa)
 		for (x = 0; x < fa->width; x++) {
 			int bright = ((int)rLine[x] + (int)gLine[x] + (int)bLine[x]) / 3;
 			if (bright >= thresh) {
-				double d = (dLine && dLine[x] > 0.0f)
+				double d = (dLine && dLine[x] > 0)
 				         ? (double)dLine[x] : 1.0;
-				if (numFlares < MAX_FLARES) {
-					flares[numFlares].x = x;
-					flares[numFlares].y = y;
-					flares[numFlares].brightness = bright;
-					flares[numFlares].depth = d;
-					numFlares++;
-				} else {
-					int weakest = 0, wi;
-					for (wi = 1; wi < MAX_FLARES; wi++) {
-						if (flares[wi].brightness < flares[weakest].brightness)
-							weakest = wi;
+				int merged = 0, fi;
+				for (fi = 0; fi < numDetect; fi++) {
+					int ddx = x - detect[fi].x;
+					int ddy = y - detect[fi].y;
+					if (ddx * ddx + ddy * ddy < 900) {
+						detect[fi].accumBright += bright;
+						detect[fi].pixelCount++;
+						if (bright > detect[fi].brightness) {
+							detect[fi].x = x;
+							detect[fi].y = y;
+							detect[fi].brightness = bright;
+							detect[fi].depth = d;
+						}
+						merged = 1;
+						break;
 					}
-					if (bright > flares[weakest].brightness) {
-						flares[weakest].x = x;
-						flares[weakest].y = y;
-						flares[weakest].brightness = bright;
-						flares[weakest].depth = d;
+				}
+				if (!merged) {
+					if (numDetect < MAX_DETECT) {
+						detect[numDetect].x = x;
+						detect[numDetect].y = y;
+						detect[numDetect].brightness = bright;
+						detect[numDetect].accumBright = bright;
+						detect[numDetect].pixelCount = 1;
+						detect[numDetect].depth = d;
+						numDetect++;
+					} else {
+						int weakest = 0, wi;
+						for (wi = 1; wi < MAX_DETECT; wi++) {
+							if (detect[wi].accumBright < detect[weakest].accumBright)
+								weakest = wi;
+						}
+						if (bright > detect[weakest].brightness) {
+							detect[weakest].x = x;
+							detect[weakest].y = y;
+							detect[weakest].brightness = bright;
+							detect[weakest].accumBright = bright;
+							detect[weakest].pixelCount = 1;
+							detect[weakest].depth = d;
+						}
 					}
 				}
 			}
 		}
 	}
 
+	for (i = 0; i < MAX_FLARES && i < numDetect; i++) {
+		int best = -1, bi;
+		for (bi = 0; bi < numDetect; bi++) {
+			if (detect[bi].accumBright > 0) {
+				if (best < 0 || detect[bi].accumBright > detect[best].accumBright)
+					best = bi;
+			}
+		}
+		if (best < 0) break;
+		flares[numFlares++] = detect[best];
+		detect[best].accumBright = 0;
+	}
+
 	for (i = 0; i < numFlares; i++) {
 		double dscale = 1.0 / (1.0 + flares[i].depth * 0.1);
+		double areaScale = flares[i].pixelCount / 10.0;
+		if (areaScale > 2.0) areaScale = 2.0;
+		if (areaScale < 0.15) areaScale = 0.15;
+		dscale *= areaScale;
 		{
 			int sg = (int)(gradR * dscale);
 			int sl = (int)(strkLen * dscale);
@@ -331,7 +390,7 @@ Process(LensFlareInst *inst, const FilterAccess *fa)
 					tB += glow * 0.6;
 				}
 
-				{
+				if (inst->showRing) {
 					double ringR2 = sGlow2 * 0.5;
 					double rdiff = r2 - ringR2;
 					if (rdiff < 0.0) rdiff = -rdiff;
@@ -345,27 +404,35 @@ Process(LensFlareInst *inst, const FilterAccess *fa)
 				}
 
 				{
-					double ax = dx > 0 ? dx : -dx;
-					if (dy > -4.0 && dy < 4.0 && ax < (double)sStrk) {
-						double hfade = 1.0 - ax / (double)sStrk;
-						double hw = 1.0 / (1.0 + dy * dy * 0.3);
-						double h = hfade * hw * inten * bright * 0.5;
-						tR += h * 0.6;
-						tG += h * 0.8;
-						tB += h * 1.0;
+					double sdx = dx, sdy = dy;
+					if (inst->randomRotation) {
+						int ri = ((fx * 7 + fy * 13) >> 2) & 7;
+						sdx = dx * rot_cos[ri] + dy * rot_sin[ri];
+						sdy = -dx * rot_sin[ri] + dy * rot_cos[ri];
 					}
-				}
+					{
+						double ax = sdx > 0 ? sdx : -sdx;
+						if (sdy > -4.0 && sdy < 4.0 && ax < (double)sStrk) {
+							double hfade = 1.0 - ax / (double)sStrk;
+							double hw = 1.0 / (1.0 + sdy * sdy * 0.3);
+							double h = hfade * hw * inten * bright * 0.5;
+							tR += h * 0.6;
+							tG += h * 0.8;
+							tB += h * 1.0;
+						}
+					}
 
-				for (s = 0; s < nStrk; s++) {
-					double along = dx * streak_dx[s] + dy * streak_dy[s];
-					double perp  = dx * streak_dy[s] - dy * streak_dx[s];
-					double p2 = perp * perp;
+					for (s = 0; s < nStrk; s++) {
+						double along = sdx * streak_dx[s] + sdy * streak_dy[s];
+						double perp  = sdx * streak_dy[s] - sdy * streak_dx[s];
+						double p2 = perp * perp;
 
-					if (along > 0.0 && along < (double)sStrk && p2 < 16.0) {
-						double fade = 1.0 - along / (double)sStrk;
-						double width = 1.0 / (1.0 + p2 * 0.5);
-						double sk = fade * width * inten * bright * 0.6;
-						tR += sk; tG += sk * 0.85; tB += sk * 0.7;
+						if (along > 0.0 && along < (double)sStrk && p2 < 16.0) {
+							double fade = 1.0 - along / (double)sStrk;
+							double width = 1.0 / (1.0 + p2 * 0.5);
+							double sk = fade * width * inten * bright * 0.6;
+							tR += sk; tG += sk * 0.85; tB += sk * 0.7;
+						}
 					}
 				}
 
@@ -418,6 +485,7 @@ Interface(
 	LWPanelFuncs *panl;
 	LWPanelID     pan;
 	LWControl    *ctlThresh, *ctlGlow, *ctlStreak, *ctlInten, *ctlStrkN;
+	LWControl    *ctlRandRot, *ctlRing;
 	int           strkIdx;
 
 	XCALL_INIT;
@@ -442,6 +510,8 @@ Interface(
 		ctlStreak = INT_CTL(panl, pan, "Streak Length");
 		ctlInten  = SLIDER_CTL(panl, pan, "Intensity", 150, 0, 100);
 		ctlStrkN  = POPUP_CTL(panl, pan, "Streaks", streakItems);
+		ctlRandRot = BOOL_CTL(panl, pan, "Random Rotation");
+		ctlRing   = BOOL_CTL(panl, pan, "Show Ring");
 
 		SET_INT(ctlThresh, inst->threshold);
 		SET_INT(ctlGlow, inst->glowRadius);
@@ -450,6 +520,8 @@ Interface(
 		strkIdx = (inst->streakCount <= 2) ? 0
 		        : (inst->streakCount <= 4) ? 1 : 2;
 		SET_INT(ctlStrkN, strkIdx);
+		SET_INT(ctlRandRot, inst->randomRotation);
+		SET_INT(ctlRing, inst->showRing);
 
 		if ((*panl->open)(pan, PANF_BLOCKING | PANF_CANCEL)) {
 			GET_INT(ctlThresh, inst->threshold);
@@ -459,6 +531,8 @@ Interface(
 			GET_INT(ctlStrkN, strkIdx);
 			inst->streakCount = (strkIdx < 3)
 			                  ? streakValues[strkIdx] : 6;
+			GET_INT(ctlRandRot, inst->randomRotation);
+			GET_INT(ctlRing, inst->showRing);
 
 			if (inst->threshold < 0) inst->threshold = 0;
 			if (inst->threshold > 255) inst->threshold = 255;
