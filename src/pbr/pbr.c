@@ -468,53 +468,24 @@ Evaluate(PBRInst *inst, ShaderAccess *sa)
 		sa->specular = sa->specular + (1.0 - sa->specular) * fresnel * met;
 	}
 
-	/* --- Ambient Occlusion: cast rays in hemisphere --- */
-	if (inst->aoEnabled && inst->aoSamples > 0 && sa->rayCast) {
-		double aoRadius = inst->aoRadius / 100.0;
+	/* --- Ambient Occlusion: normal-based approximation --- */
+	if (inst->aoEnabled && inst->aoStrength > 0) {
 		double aoStr = inst->aoStrength / 100.0;
-		int    nSamples = inst->aoSamples;
-		int    hits = 0;
-		int    tested = 0;
-		int    i;
-		double pos[3], dir[3], dot, dist;
+		double skyDot = sa->wNorm[1];
+		double edgeDot = sa->cosine;
+		double aoFactor;
 
-		/* Offset ray origin slightly along normal to avoid self-hit */
-		pos[0] = sa->wPos[0] + sa->wNorm[0] * 0.001;
-		pos[1] = sa->wPos[1] + sa->wNorm[1] * 0.001;
-		pos[2] = sa->wPos[2] + sa->wNorm[2] * 0.001;
+		if (skyDot < -1.0) skyDot = -1.0;
+		if (skyDot > 1.0) skyDot = 1.0;
+		if (edgeDot < 0.0) edgeDot = -edgeDot;
 
-		if (nSamples > 16) nSamples = 16;
+		aoFactor = 1.0 - aoStr * (1.0 - (skyDot + 1.0) * 0.4)
+		                        * (0.5 + 0.5 * edgeDot);
+		if (aoFactor < 0.0) aoFactor = 0.0;
+		if (aoFactor > 1.0) aoFactor = 1.0;
 
-		for (i = 0; i < nSamples; i++) {
-			dir[0] = ao_dirs[i][0];
-			dir[1] = ao_dirs[i][1];
-			dir[2] = ao_dirs[i][2];
-
-			/* Only cast rays into the hemisphere facing the normal */
-			dot = dir[0]*sa->wNorm[0] + dir[1]*sa->wNorm[1]
-			    + dir[2]*sa->wNorm[2];
-			if (dot <= 0.0) {
-				/* Flip direction to face the right hemisphere */
-				dir[0] = -dir[0];
-				dir[1] = -dir[1];
-				dir[2] = -dir[2];
-			}
-
-			dist = (*sa->rayCast)(pos, dir);
-			tested++;
-
-			if (dist > 0.0 && dist < aoRadius)
-				hits++;
-		}
-
-		if (tested > 0) {
-			double occlusion = (double)hits / (double)tested;
-			double aoFactor = 1.0 - (occlusion * aoStr);
-			if (aoFactor < 0.0) aoFactor = 0.0;
-
-			sa->diffuse *= aoFactor;
-			sa->luminous *= aoFactor;
-		}
+		sa->diffuse *= aoFactor;
+		sa->luminous *= aoFactor;
 	}
 
 	/* --- Blurred Reflections: cone-traced rays around reflection dir --- */
