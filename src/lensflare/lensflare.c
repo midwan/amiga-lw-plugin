@@ -121,7 +121,7 @@ static const double rot_sin[8] = {
  * ---------------------------------------------------------------- */
 
 #define MAX_DETECT 32
-#define MAX_FLARES 8
+#define MAX_FLARES 16
 
 typedef struct {
 	int x, y;
@@ -140,6 +140,7 @@ typedef struct {
 	int    randomRotation;
 	int    showRing;
 	int    anamorphic;
+	int    maxFlares;
 } LensFlareInst;
 
 /* ----------------------------------------------------------------
@@ -169,6 +170,7 @@ Create(LWError *err)
 	inst->randomRotation = 1;
 	inst->showRing = 1;
 	inst->anamorphic = 1;
+	inst->maxFlares = 8;
 
 	return inst;
 }
@@ -214,6 +216,9 @@ Load(LensFlareInst *inst, const LWLoadState *ls)
 	p = lf_parse_int(p, &v); inst->randomRotation = v;
 	p = lf_parse_int(p, &v); inst->showRing = v;
 	p = lf_parse_int(p, &v); inst->anamorphic = v;
+	p = lf_parse_int(p, &v); inst->maxFlares = v;
+	if (inst->maxFlares < 1) inst->maxFlares = 1;
+	if (inst->maxFlares > 16) inst->maxFlares = 16;
 
 	if (inst->threshold < 0) inst->threshold = 0;
 	if (inst->threshold > 255) inst->threshold = 255;
@@ -236,6 +241,7 @@ Save(LensFlareInst *inst, const LWSaveState *ss)
 	lf_append_int(buf, &pos, inst->randomRotation);
 	lf_append_int(buf, &pos, inst->showRing);
 	lf_append_int(buf, &pos, inst->anamorphic);
+	lf_append_int(buf, &pos, inst->maxFlares);
 
 	(*ss->write)(ss->writeData, buf, pos);
 
@@ -319,7 +325,7 @@ Process(LensFlareInst *inst, const FilterAccess *fa)
 		}
 	}
 
-	for (i = 0; i < MAX_FLARES && i < numDetect; i++) {
+	for (i = 0; i < inst->maxFlares && i < numDetect; i++) {
 		int best = -1, bi;
 		for (bi = 0; bi < numDetect; bi++) {
 			if (detect[bi].accumBright > 0) {
@@ -495,7 +501,7 @@ Interface(
 	LWPanelFuncs *panl;
 	LWPanelID     pan;
 	LWControl    *ctlThresh, *ctlGlow, *ctlStreak, *ctlInten, *ctlStarN;
-	LWControl    *ctlRandRot, *ctlRing, *ctlAnamorphic;
+	LWControl    *ctlRandRot, *ctlRing, *ctlAnamorphic, *ctlMaxFlr;
 	int           starIdx;
 
 	XCALL_INIT;
@@ -523,6 +529,7 @@ Interface(
 		ctlRandRot = BOOL_CTL(panl, pan, "Random Rotation");
 		ctlRing   = BOOL_CTL(panl, pan, "Show Ring");
 		ctlAnamorphic = BOOL_CTL(panl, pan, "Anamorphic");
+		ctlMaxFlr = SLIDER_CTL(panl, pan, "Max Flares", 150, 1, 16);
 
 		SET_INT(ctlThresh, inst->threshold);
 		SET_INT(ctlGlow, inst->glowRadius);
@@ -535,6 +542,7 @@ Interface(
 		SET_INT(ctlRandRot, inst->randomRotation);
 		SET_INT(ctlRing, inst->showRing);
 		SET_INT(ctlAnamorphic, inst->anamorphic);
+		SET_INT(ctlMaxFlr, inst->maxFlares);
 
 		if ((*panl->open)(pan, PANF_BLOCKING | PANF_CANCEL)) {
 			GET_INT(ctlThresh, inst->threshold);
@@ -547,6 +555,9 @@ Interface(
 			GET_INT(ctlRandRot, inst->randomRotation);
 			GET_INT(ctlRing, inst->showRing);
 			GET_INT(ctlAnamorphic, inst->anamorphic);
+			GET_INT(ctlMaxFlr, inst->maxFlares);
+			if (inst->maxFlares < 1) inst->maxFlares = 1;
+			if (inst->maxFlares > 16) inst->maxFlares = 16;
 
 			if (inst->threshold < 0) inst->threshold = 0;
 			if (inst->threshold > 255) inst->threshold = 255;
