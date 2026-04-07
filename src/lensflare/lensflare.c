@@ -120,8 +120,8 @@ static const double rot_sin[8] = {
  * Types
  * ---------------------------------------------------------------- */
 
-#define MAX_DETECT 32
-#define MAX_FLARES 16
+#define MAX_DETECT 64
+#define MAX_FLARES 50
 
 typedef struct {
 	int x, y;
@@ -218,7 +218,7 @@ Load(LensFlareInst *inst, const LWLoadState *ls)
 	p = lf_parse_int(p, &v); inst->anamorphic = v;
 	p = lf_parse_int(p, &v); inst->maxFlares = v;
 	if (inst->maxFlares < 1) inst->maxFlares = 1;
-	if (inst->maxFlares > 16) inst->maxFlares = 16;
+	if (inst->maxFlares > 50) inst->maxFlares = 50;
 
 	if (inst->threshold < 0) inst->threshold = 0;
 	if (inst->threshold > 255) inst->threshold = 255;
@@ -529,7 +529,7 @@ Interface(
 		ctlRandRot = BOOL_CTL(panl, pan, "Random Rotation");
 		ctlRing   = BOOL_CTL(panl, pan, "Show Ring");
 		ctlAnamorphic = BOOL_CTL(panl, pan, "Anamorphic");
-		ctlMaxFlr = SLIDER_CTL(panl, pan, "Max Flares", 150, 1, 16);
+		ctlMaxFlr = SLIDER_CTL(panl, pan, "Max Flares", 150, 1, 50);
 
 		SET_INT(ctlThresh, inst->threshold);
 		SET_INT(ctlGlow, inst->glowRadius);
@@ -557,7 +557,7 @@ Interface(
 			GET_INT(ctlAnamorphic, inst->anamorphic);
 			GET_INT(ctlMaxFlr, inst->maxFlares);
 			if (inst->maxFlares < 1) inst->maxFlares = 1;
-			if (inst->maxFlares > 16) inst->maxFlares = 16;
+			if (inst->maxFlares > 50) inst->maxFlares = 50;
 
 			if (inst->threshold < 0) inst->threshold = 0;
 			if (inst->threshold > 255) inst->threshold = 255;
