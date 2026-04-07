@@ -729,7 +729,7 @@ Interface(
 		SET_INT(ctlRoughEn, inst->roughEnabled);
 		SET_INT(ctlRoughAmt, inst->roughAmount);
 		aoIdx = inst->aoEnabled
-		      ? ((inst->aoSamples <= 4) ? 1 : (inst->aoSamples <= 8) ? 2 : 3)
+		      ? ((inst->aoSamples <= 2) ? 1 : (inst->aoSamples <= 4) ? 2 : 3)
 		      : 0;
 		SET_INT(ctlAOSamp, aoIdx);
 		{
@@ -738,12 +738,12 @@ Interface(
 		}
 		SET_INT(ctlAOStr, inst->aoStrength);
 		blurIdx = inst->blurReflEnabled
-		        ? ((inst->blurReflSamples <= 4) ? 1 : (inst->blurReflSamples <= 8) ? 2 : 3)
+		        ? ((inst->blurReflSamples <= 2) ? 1 : (inst->blurReflSamples <= 4) ? 2 : 3)
 		        : 0;
 		SET_INT(ctlBlurSamp, blurIdx);
 		SET_INT(ctlBlurAmt, inst->blurReflAmount);
 		envIdx = inst->envEnabled
-		       ? ((inst->envSamples <= 4) ? 1 : (inst->envSamples <= 8) ? 2 : 3)
+		       ? ((inst->envSamples <= 2) ? 1 : (inst->envSamples <= 4) ? 2 : 3)
 		       : 0;
 		SET_INT(ctlEnvSamp, envIdx);
 		SET_INT(ctlEnvStr, inst->envStrength);
