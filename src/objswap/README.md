@@ -14,6 +14,13 @@ geometry is needed at specific frames.
 4. During preview or render, the object is automatically replaced with the
    correct file for each frame
 
+ObjSwap preserves the surface settings already loaded on the base object.
+For numbered replacement objects, it creates a sidecar copy next to the source
+object with the object's top-level `SURF` chunks removed. The geometry and
+`SRFS` surface name list are left intact, so polygon assignments still work,
+but later files do not overwrite the base object's colors, textures, shaders,
+or other surface parameters.
+
 ### Frame Matching Rules
 
 - **Exact match**: If `digit_5` exists, it is shown at frame 5
@@ -93,3 +100,9 @@ The plugin looks for files named `basename_N` where:
 
 - **Large sequences**: As of `0.7.0`, scan results are sorted and searched
   more efficiently, so bigger replacement sets remain responsive.
+
+- **Surface preservation**: Keep the intended render surfaces on the base
+  object. Numbered objects should use the same surface names when they need
+  those base surface settings. ObjSwap may create `ObjSwapCache-*.lwo`
+  sidecar files beside the sequence objects; keep these with the project if
+  you save scenes after previewing or rendering swapped frames.

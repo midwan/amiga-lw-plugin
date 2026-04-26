@@ -10,6 +10,11 @@
  * replacement file before the current frame is used. Before the
  * first numbered file, the original object is kept.
  *
+ * Replacement files are copied next to the source object with top-level SURF
+ * chunks stripped. The SRFS surface-name list remains, so polygons keep their
+ * assignments, but LightWave does not overwrite the surface parameters already
+ * loaded from the base object.
+ *
  * NOTE: Uses AllocMem/FreeMem instead of malloc/free because
  * -nostartfiles skips libnix heap initialization.
  */
@@ -36,6 +41,9 @@ extern struct ExecBase   *SysBase;
 #define MAX_PATH     256
 #define MAX_NAME     108
 #define MAX_ENTRIES  4096
+#define IO_BUF_SIZE  1024
+
+static unsigned char ioBuf[IO_BUF_SIZE];
 
 /* ----------------------------------------------------------------
  * Custom case-insensitive compare (avoids libnix strncasecmp
@@ -60,6 +68,21 @@ ci_strncmp(const char *a, const char *b, int n)
 		if (ca == 0) return 0;
 	}
 	return 0;
+}
+
+static int
+ci_streq(const char *a, const char *b)
+{
+	int len;
+
+	if (!a || !b)
+		return 0;
+
+	len = strlen(a);
+	if ((int)strlen(b) != len)
+		return 0;
+
+	return ci_strncmp(a, b, len + 1) == 0;
 }
 
 /* ----------------------------------------------------------------
@@ -115,6 +138,224 @@ int_to_str(int val, char *buf, int buflen)
 	buf[len] = '\0';
 }
 
+static void
+u32_to_hex(unsigned long val, char *buf)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	int i;
+
+	for (i = 7; i >= 0; i--) {
+		buf[i] = hex[val & 15u];
+		val >>= 4;
+	}
+	buf[8] = '\0';
+}
+
+/* ----------------------------------------------------------------
+ * IFF/LWO helpers
+ * ---------------------------------------------------------------- */
+
+static int
+id_is(const unsigned char *id, const char *tag)
+{
+	return id[0] == (unsigned char)tag[0]
+	    && id[1] == (unsigned char)tag[1]
+	    && id[2] == (unsigned char)tag[2]
+	    && id[3] == (unsigned char)tag[3];
+}
+
+static unsigned long
+hash_string(const char *s)
+{
+	unsigned long h = 2166136261UL;
+
+	while (*s) {
+		h ^= (unsigned char)*s++;
+		h *= 16777619UL;
+	}
+
+	return h;
+}
+
+static int
+read_exact(BPTR fh, void *buf, long len)
+{
+	return Read(fh, buf, len) == len;
+}
+
+static int
+write_exact(BPTR fh, const void *buf, long len)
+{
+	return Write(fh, (APTR)buf, len) == len;
+}
+
+static int
+read_u32be_file(BPTR fh, unsigned long *value)
+{
+	unsigned char b[4];
+
+	if (!read_exact(fh, b, 4))
+		return 0;
+
+	*value = ((unsigned long)b[0] << 24)
+	       | ((unsigned long)b[1] << 16)
+	       | ((unsigned long)b[2] << 8)
+	       | (unsigned long)b[3];
+
+	return 1;
+}
+
+static int
+write_u32be_file(BPTR fh, unsigned long value)
+{
+	unsigned char b[4];
+
+	b[0] = (unsigned char)((value >> 24) & 255u);
+	b[1] = (unsigned char)((value >> 16) & 255u);
+	b[2] = (unsigned char)((value >> 8) & 255u);
+	b[3] = (unsigned char)(value & 255u);
+
+	return write_exact(fh, b, 4);
+}
+
+static int
+copy_bytes(BPTR in, BPTR out, unsigned long count)
+{
+	while (count > 0) {
+		long chunk = (count > IO_BUF_SIZE)
+		           ? IO_BUF_SIZE : (long)count;
+
+		if (!read_exact(in, ioBuf, chunk))
+			return 0;
+		if (!write_exact(out, ioBuf, chunk))
+			return 0;
+
+		count -= (unsigned long)chunk;
+	}
+
+	return 1;
+}
+
+static int
+skip_bytes(BPTR in, unsigned long count)
+{
+	while (count > 0) {
+		long chunk = (count > IO_BUF_SIZE)
+		           ? IO_BUF_SIZE : (long)count;
+
+		if (!read_exact(in, ioBuf, chunk))
+			return 0;
+
+		count -= (unsigned long)chunk;
+	}
+
+	return 1;
+}
+
+static int
+file_exists(const char *path)
+{
+	BPTR lock;
+
+	lock = Lock((STRPTR)path, ACCESS_READ);
+	if (!lock)
+		return 0;
+
+	UnLock(lock);
+	return 1;
+}
+
+static int
+make_surface_preserved_copy(const char *src, const char *dest)
+{
+	BPTR          in, out;
+	unsigned char id[4], formType[4];
+	unsigned long formSize, remaining, len, payload, outSize;
+	int           ok = 0, sawSurf = 0;
+
+	if (!DOSBase)
+		return 0;
+
+	in = Open((STRPTR)src, MODE_OLDFILE);
+	if (!in)
+		return 0;
+
+	out = Open((STRPTR)dest, MODE_NEWFILE);
+	if (!out) {
+		Close(in);
+		return 0;
+	}
+
+	if (!read_exact(in, id, 4) || !id_is(id, "FORM"))
+		goto done;
+	if (!read_u32be_file(in, &formSize))
+		goto done;
+	if (!read_exact(in, formType, 4))
+		goto done;
+
+	if (!id_is(formType, "LWOB") && !id_is(formType, "LWLO"))
+		goto done;
+	if (formSize < 4)
+		goto done;
+
+	if (!write_exact(out, id, 4))
+		goto done;
+	if (!write_u32be_file(out, 0))
+		goto done;
+	if (!write_exact(out, formType, 4))
+		goto done;
+
+	outSize = 4;
+	remaining = formSize - 4;
+
+	while (remaining >= 8) {
+		if (!read_exact(in, id, 4))
+			goto done;
+		if (!read_u32be_file(in, &len))
+			goto done;
+
+		remaining -= 8;
+		payload = len + (len & 1u);
+		if (payload > remaining)
+			goto done;
+
+		if (id_is(id, "SURF")) {
+			sawSurf = 1;
+			if (!skip_bytes(in, payload))
+				goto done;
+		} else {
+			if (!write_exact(out, id, 4))
+				goto done;
+			if (!write_u32be_file(out, len))
+				goto done;
+			if (!copy_bytes(in, out, payload))
+				goto done;
+			outSize += 8 + payload;
+		}
+
+		remaining -= payload;
+	}
+
+	if (remaining != 0)
+		goto done;
+
+	if (Seek(out, 4, OFFSET_BEGINNING) == -1)
+		goto done;
+	if (!write_u32be_file(out, outSize))
+		goto done;
+
+	ok = sawSurf ? 1 : 2;
+
+done:
+	Close(out);
+	Close(in);
+
+	if (!ok)
+		DeleteFile((STRPTR)dest);
+
+	return ok;
+}
+
 /* ----------------------------------------------------------------
  * Types
  * ---------------------------------------------------------------- */
@@ -129,11 +370,90 @@ typedef struct {
 	char        baseDir[MAX_PATH];
 	char        baseName[MAX_NAME];
 	char        origPath[MAX_PATH];  /* base object file (no _N suffix) */
+	char        cacheSrc[MAX_PATH];
+	char        cachePath[MAX_PATH];
+	char        cacheTempPath[MAX_PATH];
 	FrameEntry *entries;
 	int         numEntries;
 	int         capacity;
 	int         scanned;
 } ObjSwapInst;
+
+static int
+make_cache_path(ObjSwapInst *inst, const char *src, char *dest, int destMax)
+{
+	char srcHex[9];
+	int  dirLen, nameLen;
+
+	u32_to_hex(hash_string(src), srcHex);
+
+	dirLen = strlen(inst->baseDir);
+	nameLen = 13 + 8 + 4; /* "ObjSwapCache-" + hash + ".lwo" */
+	if (dirLen + nameLen >= destMax) {
+		dest[0] = '\0';
+		return 0;
+	}
+
+	strcpy(dest, inst->baseDir);
+	strcat(dest, "ObjSwapCache-");
+	strcat(dest, srcHex);
+	strcat(dest, ".lwo");
+
+	return 1;
+}
+
+static void
+make_cache_temp_path(const char *cachePath, char *tempPath)
+{
+	strcpy(tempPath, cachePath);
+	tempPath[strlen(tempPath) - 3] = 't';
+	tempPath[strlen(tempPath) - 2] = 'm';
+	tempPath[strlen(tempPath) - 1] = 'p';
+}
+
+static const char *
+surface_preserved_filename(ObjSwapInst *inst, const char *src)
+{
+	int made;
+
+	if (inst->cacheSrc[0] && strcmp(inst->cacheSrc, src) == 0)
+		return inst->cachePath[0] ? inst->cachePath : src;
+
+	if (!make_cache_path(inst, src, inst->cachePath, MAX_PATH))
+		return src;
+
+	make_cache_temp_path(inst->cachePath, inst->cacheTempPath);
+	made = make_surface_preserved_copy(src, inst->cacheTempPath);
+
+	strncpy(inst->cacheSrc, src, MAX_PATH - 1);
+	inst->cacheSrc[MAX_PATH - 1] = '\0';
+
+	if (made == 1) {
+		if (!Rename((STRPTR)inst->cacheTempPath,
+		            (STRPTR)inst->cachePath)) {
+			if (file_exists(inst->cachePath)) {
+				if (DeleteFile((STRPTR)inst->cachePath) &&
+				    Rename((STRPTR)inst->cacheTempPath,
+				           (STRPTR)inst->cachePath))
+					return inst->cachePath;
+
+				DeleteFile((STRPTR)inst->cacheTempPath);
+				if (file_exists(inst->cachePath))
+					return inst->cachePath;
+			}
+
+			DeleteFile((STRPTR)inst->cacheTempPath);
+			inst->cachePath[0] = '\0';
+			return src;
+		}
+		return inst->cachePath;
+	}
+
+	if (made == 2)
+		DeleteFile((STRPTR)inst->cacheTempPath);
+	inst->cachePath[0] = '\0';
+	return src;
+}
 
 /* ----------------------------------------------------------------
  * Globals (set once in Activate)
@@ -394,9 +714,11 @@ do_scan(ObjSwapInst *inst)
 		 * scanner, which will crash the plugin.
 		*/
 
-		char * ext = strrchr(fname, '.');
-		if(strcmp(ext, ".info") == 0)
-			continue;
+		{
+			char *ext = strrchr(fname, '.');
+			if (ext && ci_strncmp(ext, ".info", 6) == 0)
+				continue;
+		}
 
 		frame = parse_frame_number(
 			(const char *)fib->fib_FileName,
@@ -461,6 +783,9 @@ scan_from_path(ObjSwapInst *inst, const char *objPath)
 
 	strncpy(inst->basePath, objPath, MAX_PATH - 1);
 	inst->basePath[MAX_PATH - 1] = '\0';
+	inst->cacheSrc[0] = '\0';
+	inst->cachePath[0] = '\0';
+	inst->cacheTempPath[0] = '\0';
 
 	split_path(objPath, inst->baseDir, MAX_PATH,
 	           filename, MAX_NAME);
@@ -508,6 +833,9 @@ Copy(ObjSwapInst *from, ObjSwapInst *to)
 	strcpy(to->baseDir, from->baseDir);
 	strcpy(to->baseName, from->baseName);
 	strcpy(to->origPath, from->origPath);
+	to->cacheSrc[0] = '\0';
+	to->cachePath[0] = '\0';
+	to->cacheTempPath[0] = '\0';
 	to->scanned = from->scanned;
 
 	free_entries(to);
@@ -553,6 +881,7 @@ XCALL_(static void)
 Evaluate(ObjSwapInst *inst, ObjReplacementAccess *oa)
 {
 	int bestIdx;
+	const char *target;
 
 	XCALL_INIT;
 
@@ -566,11 +895,15 @@ Evaluate(ObjSwapInst *inst, ObjReplacementAccess *oa)
 	                          oa->newFrame);
 
 	if (bestIdx >= 0)
-		oa->newFilename = inst->entries[bestIdx].filename;
+		target = surface_preserved_filename(
+			inst, inst->entries[bestIdx].filename);
 	else if (inst->origPath[0])
-		oa->newFilename = inst->origPath;
+		target = inst->origPath;
 	else
-		oa->newFilename = inst->basePath;
+		target = inst->basePath;
+
+	if (!ci_streq(oa->curFilename, target))
+		oa->newFilename = target;
 }
 
 /* ----------------------------------------------------------------
@@ -660,7 +993,8 @@ Interface(
 		}
 
 		infoLines[0] = infoBuf;
-		infoLines[1] = 0;
+		infoLines[1] = "Surface data: preserved from base object";
+		infoLines[2] = 0;
 		infoCtl = TEXT_CTL(panl, pan, "", infoLines);
 		(void)infoCtl;
 
