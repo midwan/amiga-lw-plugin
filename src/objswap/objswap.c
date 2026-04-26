@@ -894,10 +894,13 @@ Evaluate(ObjSwapInst *inst, ObjReplacementAccess *oa)
 	bestIdx = find_best_entry(inst->entries, inst->numEntries,
 	                          oa->newFrame);
 
-	if (bestIdx >= 0)
-		target = surface_preserved_filename(
-			inst, inst->entries[bestIdx].filename);
-	else if (inst->origPath[0])
+	if (bestIdx >= 0) {
+		if (ci_streq(inst->entries[bestIdx].filename, inst->basePath))
+			target = inst->basePath;
+		else
+			target = surface_preserved_filename(
+				inst, inst->entries[bestIdx].filename);
+	} else if (inst->origPath[0])
 		target = inst->origPath;
 	else
 		target = inst->basePath;

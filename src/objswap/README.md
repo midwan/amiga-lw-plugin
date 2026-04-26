@@ -89,7 +89,9 @@ The plugin looks for files named `basename_N` where:
 
 - **Loading any variant**: You can load any numbered variant as the base
   object (e.g., `digit_5`). The plugin will strip the `_5` suffix and
-  discover all siblings automatically.
+  discover all siblings automatically. When the current frame maps back to
+  that loaded object file, ObjSwap keeps it loaded as-is so its own surface
+  settings remain available for later replacements.
 
 - **Scene persistence**: The plugin settings are saved with the scene file.
   When you reload the scene, the plugin will rescan the directory for
