@@ -10,10 +10,10 @@
  * replacement file before the current frame is used. Before the
  * first numbered file, the original object is kept.
  *
- * Replacement files are copied next to the source object with top-level SURF
- * chunks stripped. The SRFS surface-name list remains, so polygons keep their
- * assignments, but LightWave does not overwrite the surface parameters already
- * loaded from the base object.
+ * Replacement files are copied next to the source object with their top-level
+ * SURF chunks replaced by the SURF chunks from the base object. The SRFS
+ * surface-name list remains, so polygons keep their assignments, while each
+ * replacement reload carries the same surface parameters as the base object.
  *
  * NOTE: Uses AllocMem/FreeMem instead of malloc/free because
  * -nostartfiles skips libnix heap initialization.
@@ -266,39 +266,102 @@ file_exists(const char *path)
 }
 
 static int
-make_surface_preserved_copy(const char *src, const char *dest)
+copy_lwo_chunks(BPTR in, BPTR out, unsigned long formSize,
+                int copySurf, unsigned long *outSize,
+                int *surfCount)
 {
-	BPTR          in, out;
-	unsigned char id[4], formType[4];
-	unsigned long formSize, remaining, len, payload, outSize;
-	int           ok = 0, sawSurf = 0;
+	unsigned char id[4];
+	unsigned long remaining, len, payload;
 
-	if (!DOSBase)
+	if (formSize < 4)
 		return 0;
 
-	in = Open((STRPTR)src, MODE_OLDFILE);
-	if (!in)
-		return 0;
+	remaining = formSize - 4;
+	while (remaining >= 8) {
+		if (!read_exact(in, id, 4))
+			return 0;
+		if (!read_u32be_file(in, &len))
+			return 0;
 
-	out = Open((STRPTR)dest, MODE_NEWFILE);
-	if (!out) {
-		Close(in);
-		return 0;
+		remaining -= 8;
+		payload = len + (len & 1u);
+		if (payload > remaining)
+			return 0;
+
+		if (id_is(id, "SURF") == copySurf) {
+			if (!write_exact(out, id, 4))
+				return 0;
+			if (!write_u32be_file(out, len))
+				return 0;
+			if (!copy_bytes(in, out, payload))
+				return 0;
+			*outSize += 8 + payload;
+			if (copySurf)
+				(*surfCount)++;
+		} else {
+			if (!skip_bytes(in, payload))
+				return 0;
+		}
+
+		remaining -= payload;
 	}
 
-	if (!read_exact(in, id, 4) || !id_is(id, "FORM"))
+	if (remaining != 0)
+		return 0;
+
+	return 1;
+}
+
+static int
+open_lwo(BPTR *fh, const char *path, unsigned long *formSize,
+         unsigned char *formType)
+{
+	unsigned char id[4];
+
+	*fh = Open((STRPTR)path, MODE_OLDFILE);
+	if (!*fh)
+		return 0;
+
+	if (!read_exact(*fh, id, 4) || !id_is(id, "FORM"))
 		goto done;
-	if (!read_u32be_file(in, &formSize))
+	if (!read_u32be_file(*fh, formSize))
 		goto done;
-	if (!read_exact(in, formType, 4))
+	if (!read_exact(*fh, formType, 4))
 		goto done;
 
 	if (!id_is(formType, "LWOB") && !id_is(formType, "LWLO"))
 		goto done;
-	if (formSize < 4)
+	if (*formSize < 4)
 		goto done;
 
-	if (!write_exact(out, id, 4))
+	return 1;
+
+done:
+	Close(*fh);
+	*fh = 0;
+	return 0;
+}
+
+static int
+make_surface_preserved_copy(const char *src, const char *surfaceSrc,
+                            const char *dest)
+{
+	BPTR          in = 0, surfIn = 0, out = 0;
+	unsigned char formType[4], surfaceFormType[4];
+	unsigned long formSize, surfaceFormSize, outSize;
+	int           ok = 0, surfCount = 0;
+
+	if (!DOSBase)
+		return 0;
+
+	if (!open_lwo(&in, src, &formSize, formType))
+		return 0;
+
+	out = Open((STRPTR)dest, MODE_NEWFILE);
+	if (!out)
+		goto done;
+
+	if (!write_exact(out, "FORM", 4))
 		goto done;
 	if (!write_u32be_file(out, 0))
 		goto done;
@@ -306,49 +369,38 @@ make_surface_preserved_copy(const char *src, const char *dest)
 		goto done;
 
 	outSize = 4;
-	remaining = formSize - 4;
-
-	while (remaining >= 8) {
-		if (!read_exact(in, id, 4))
-			goto done;
-		if (!read_u32be_file(in, &len))
-			goto done;
-
-		remaining -= 8;
-		payload = len + (len & 1u);
-		if (payload > remaining)
-			goto done;
-
-		if (id_is(id, "SURF")) {
-			sawSurf = 1;
-			if (!skip_bytes(in, payload))
-				goto done;
-		} else {
-			if (!write_exact(out, id, 4))
-				goto done;
-			if (!write_u32be_file(out, len))
-				goto done;
-			if (!copy_bytes(in, out, payload))
-				goto done;
-			outSize += 8 + payload;
-		}
-
-		remaining -= payload;
-	}
-
-	if (remaining != 0)
+	if (!copy_lwo_chunks(in, out, formSize, 0,
+	                     &outSize, &surfCount))
 		goto done;
+	Close(in);
+	in = 0;
+
+	if (!open_lwo(&surfIn, surfaceSrc, &surfaceFormSize,
+	              surfaceFormType))
+		goto done;
+	if (!copy_lwo_chunks(surfIn, out, surfaceFormSize, 1,
+	                     &outSize, &surfCount))
+		goto done;
+
+	if (surfCount == 0) {
+		ok = 2;
+		goto done;
+	}
 
 	if (Seek(out, 4, OFFSET_BEGINNING) == -1)
 		goto done;
 	if (!write_u32be_file(out, outSize))
 		goto done;
 
-	ok = sawSurf ? 1 : 2;
+	ok = 1;
 
 done:
-	Close(out);
-	Close(in);
+	if (out)
+		Close(out);
+	if (surfIn)
+		Close(surfIn);
+	if (in)
+		Close(in);
 
 	if (!ok)
 		DeleteFile((STRPTR)dest);
@@ -423,7 +475,8 @@ surface_preserved_filename(ObjSwapInst *inst, const char *src)
 		return src;
 
 	make_cache_temp_path(inst->cachePath, inst->cacheTempPath);
-	made = make_surface_preserved_copy(src, inst->cacheTempPath);
+	made = make_surface_preserved_copy(src, inst->basePath,
+	                                   inst->cacheTempPath);
 
 	strncpy(inst->cacheSrc, src, MAX_PATH - 1);
 	inst->cacheSrc[MAX_PATH - 1] = '\0';
